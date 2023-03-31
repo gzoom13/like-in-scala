@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="author" content="Andrey Golikov">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style type="text/css">
+    .underline {
+      text-decoration: underline;
+    }
+  </style>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.css" />
+  <link rel="stylesheet" href="styles/tinkoff.css" id="theme" />
+  <link rel="stylesheet" href="styles/extra.css" />
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" />
+  <link rel="stylesheet" href="styles/monokai.css" />
+
+  <title>Почти как в Scala</title>
+</head>
+
+<body>
+
+  <div class="reveal">
+    <div class="slides">
+      <section id="sec-title-slide" data-background="rgb(255, 221, 45)" data-state="title-slide">
+        <img src="images/logo.svg" id="title-img">
+        <h2 class="title">Почти как в Scala</h2>
+        <h6 class="author">Андрей Голиков</h6>
+      </section>
+      <section class="about-slide" data-background-color="#757C8D" style="height: 600px;">
+        <div class="block">
+          <div id="about-column">
+            <img src="images/logo-yel.svg">
+            <div id="about-qr">
+              <img src="images/qr.svg">
+              <p>Ссылка на презентацию</p>
+            </div>
+          </div>
+          <div id="about-block">
+            <img src="images/me2.png">
+
+
+            <p>Андрей Голиков | TeamLead Tinkoff API</p>
+
+            <div id="about-contacts">
+              <div class="about-contacts-line">
+                <img src="images/at.svg">
+                <p>andrey@golikov.net</p>
+              </div>
+              <div class="about-contacts-line">
+                <img src="images/gh.png">
+                <p>gzoom13</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <!--Intro-->
+      <section>
+        <section data-markdown>
+          <textarea data-template>
+            # План
+
+            1. DI в Spring
+            1. ngrx для обработки эффектов
+            1. Итоги
+          </textarea>
+        </section>
+      </section>
+      <section>
+        <section data-markdown>
+          <textarea data-template>
+                    Посмотрим на пример DI в Spring
+
+                    ---
+                    Вешаем аннотации и поехали
+
+                    ---
+                    <img class="code-header">
+
+                    ```java
+                    interface UserDao {
+                        void save(User user);
+                    }
+                
+                    @RequiredArgsConstructor
+                    @Component
+                    public static class Service {
+                        private final UserDao dao;
+                        // ...
+                    }
+                    ```
+                    ---
+
+                    <img class="code-header">
+
+                    ```java
+                    @Component
+                    @Profile("test")
+                    public static class TestUserDao implements UserDao {
+                        // ...
+                    }
+                
+                    @Component
+                    @Profile("prod")
+                    public static class ProdUserDao implements UserDao {
+                        // ...
+                    }
+                    ```
+                    ---
+
+                    Проблемы с таким подходом:
+
+                    * Reflection
+                    * Runtime проверки (например, уникальность бина)
+                    * Сложность самого Spring Framework
+                    * Моя личная боль: уровни абстракций смешиваются
+                    ---
+
+                    Посмотрим реактивное приложение на Scala
+
+                    ---
+                    <img class="code-header">
+
+                    ```scala[|1-6|8-9]
+                    val vertxResources = for {
+                      vertx <- Resource.make(Vertx.vertx())
+                      server <- Resource.make(vertx.createHttpServer())
+                      router <- Resource.eval(Router.router(vertx))
+                      dispatcher <- Dispatcher.sequential[IO]
+                    } yield (dispatcher, server, router)
+                
+                    val dbResources =
+                      Resource.make(new PostgresJAsyncContext)
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```scala[|5]
+                    val application = (vertxResources, dbResources)
+                      .tupled
+                      .evalMap { case ((dispatcher, server, router), ctx) =>
+                        for {
+                          port <- Env[IO].get("HTTP_PORT")//.toInt.orElse(8080)
+                          endpoints = new Endpoints(new UserRepository(ctx))
+                          bind <- // apply all endpoints to router
+                        } yield ()
+                    }
+                    ```
+                    ---
+                    В чем минусы:
+
+                    * Много явных объявлений и бойлерплейта
+                    ---
+                    С другой стороны:
+
+                    * Зависимость сервисов определяется во время компиляции
+                    * Никакой рефлексии и "магии", все композируется
+                    * Легко переопределять параметры и переконфигурировать приложение
+                    ---
+                    Мейнтейнеры Spring осознают плюсы: Spring Fu
+
+                    ---
+                    <img class="code-header">
+
+                    ```java
+                    public static Consumer<ConfigurationDsl> dataConfig = conf ->
+                      conf
+                        .beans(b -> b
+                          .bean(UserRepository.class)
+                          .bean(ConnectionFactoryInitializer.class, () -> {
+                            var initializer =
+                              new ConnectionFactoryInitializer();
+                            initializer
+                              .setConnectionFactory(b.ref(ConnectionFactory.class));
+                            return initializer;
+                        })).enable(r2dbc(dsl -> dsl
+                          .url("r2dbc:h2:mem:///testdb;DB_CLOSE_DELAY=-1")));
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```java
+                    public static Consumer<ConfigurationDsl> webConfig = conf -> conf
+                      .beans(beans -> beans.bean(UserHandler.class))
+                      .enable(webFlux(server -> {
+                        // ...
+                        server
+                            .router(r -> {
+                              r.GET("/", conf.ref(UserHandler.class)::listApi);
+                              r.GET("/api/user", conf.ref(UserHandler.class)::listApi);
+                            })
+                            .codecs(codecs -> codecs.string().jackson());
+                      }));
+                              
+                    ```
+                    ---
+                    <img class="code-header">
+
+                    ```java
+                    public static JafuApplication app = reactiveWebApplication(app ->
+                      app
+                        .enable(Configurations.dataConfig)
+                        .enable(Configurations.webConfig)
+                    );
+                    ```
+
+                    ---
+                    Похоже на то, что мы писали на Scala
+                </textarea>
+        </section>
+      </section>
+      <section>
+        <section data-markdown>
+          <textarea data-template>
+            Теперь посмотрим на ngrx
+          </textarea>
+        </section>
+
+        <section data-markdown>
+          <textarea data-template>
+            ... you might use NgRx when you build an application with a lot of user interactions and multiple data sources
+          </textarea>
+        </section>
+        <section>
+          <img class="r-stretch" src="images/state-management-lifecycle.png">
+        </section>
+        <section data-markdown>
+          <textarea data-template>
+            <img class="code-header">
+
+            ```js
+            export const increment =
+              createAction('[Counter Component] Increment');
+            export const decrement =
+              createAction('[Counter Component] Decrement');
+            export const reset =
+              createAction('[Counter Component] Reset');
+            export const loadCounter =
+              createAction('[Counter API] Fetch Request');
+            export const counterLoaded =
+              createAction(
+                '[Counter API] Counter Loaded Success',
+                props<{ counter: number }>()
+              );
+            export const counterLoadingError =
+              createAction('[Counter API] Counter Loaded Error');
+            ```
+            ---
+            <img class="code-header">
+
+            ```js
+            export const initialState = 0;
+
+            export const counterReducer = createReducer(
+              initialState,
+              on(increment, (state) => state + 1),
+              on(decrement, (state) => state - 1),
+              on(reset, (state) => 0),
+              on(counterLoaded, (state, a) => a.counter)
+            );
+            ```
+            ---
+            <img class="code-header">
+
+            ```js[|4|6|8]
+            loadCounter$ = createEffect(() =>
+            this.actions$.pipe(
+              ofType('[Counter API] Fetch Request'),
+              exhaustMap(() => this.counterService.load()
+                .pipe(
+                  map(counter => counterLoaded({counter})),
+                  catchError(() =>
+                    of({type: '[Counter API] Counter Loaded Error'})
+                  )
+                )
+              )
+            )
+            ```
+            ---
+            Стейт менеджмент в асинхронном приложении — это сложно
+            ---
+            Во многих языках и фреймворках для упрощения вводятся отдельные концепты:
+
+            * корутины
+            * модель акторов
+            * Redux
+            * STM
+            * и так далее
+            ---
+            При этом описание асинхронной программы — набор лямбда-функций или коллбэков:
+
+            * Future
+            * JS Promises
+            * RxJs
+            * IO монада
+            ---
+            В современной Scala `cats-effect` — де-факто стандарт для написания асинхронных программ
+            ---
+            <img class="code-header">
+
+            ```scala[|3]
+            case class State(counter: Int)
+            for {
+              initialCounter <- initCounter
+              state <- Ref.of(State(initialCounter))
+              _ <- state.update(_.focus(_.counter).modify(_ + 1))
+              newState <- state.get
+              _ <- IO.println("State after update is " + newState)
+              fetchedCounter <- fetchCounter
+              _ <- state.update(_.focus(_.counter).set(fetchedCounter))
+              newerState <- state.get
+              _ <- IO.println("State after fetch is " + newerState)
+            } yield ()
+            ```
+            ---
+            <img class="code-header">
+
+            ```scala[|1]
+            private def initCounter[F[_]: Functor: Env]:
+              F[Either[IllegalArgumentException, Int]] =
+                // ...
+            ```
+            ---
+            <img class="code-header">
+
+            ```scala[7]
+            for {
+              initialCounter <- initCounter
+              state <- Ref.of(State(initialCounter))
+              _ <- state.update(_.focus(_.counter).modify(_ + 1))
+              newState <- state.get
+              _ <- IO.println("State after update is " + newState)
+              fetchedCounter <- fetchCounter
+              _ <- state.update(_.focus(_.counter).set(fetchedCounter))
+              newerState <- state.get
+              _ <- IO.println("State after fetch is " + newerState)
+            } yield ()
+            ```
+            ---
+            <img class="code-header">
+
+            ```scala
+            private def fetchCounter1[F[_]: Functor: Clock]:
+              F[Either[IllegalArgumentException, Int]] =
+                Clock[F].realTime.map(_.toMillis.toInt.asRight)
+          
+            private def fetchCounter2[F[_]: Functor: Console]:
+              F[Either[IllegalArgumentException, Int]] =
+                Console[F].readLine.map(s => counterToInt(s.some))
+          
+            private def fetchCounter3[F[_]: Functor]
+              (using http: SttpBackend[F, _]): 
+                F[Either[RuntimeException, Int]] =
+                  //...             
+            ```
+            ---
+            Вообще не похоже, что мы писали на JS
+            ---
+            Итоги:
+
+            * Реактивное программирование вас найдет
+            * Сложный стейт менеджмент встречается чаще, чем вы думаете
+            * Лучше знать подходы к нему, чем не знать
+          </textarea>
+        </section>
+      </section>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js/plugin/highlight/highlight.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js/plugin/markdown/markdown.js"></script>
+
+  <script>
+    // Full list of configuration options available here:
+    // https://github.com/hakimel/reveal.js#configuration
+    Reveal.initialize({
+
+      controls: true,
+      progress: true,
+      history: false,
+      center: true,
+      slideNumber: 'c',
+      rollingLinks: false,
+      keyboard: true,
+      mouseWheel: false,
+      fragmentInURL: false,
+      hashOneBasedIndex: false,
+      pdfSeparateFragments: true,
+      overview: true,
+      width: 1075,
+      margin: 0.00,
+      navigationMode: 'linear',
+
+      transition: 'slide',
+      transitionSpeed: 'default',
+
+      markdown: {
+        gfm: true
+      },
+      plugins: [RevealMarkdown, RevealHighlight],
+
+      dependencies: [
+      ]
+
+    });
+  </script>
+
+</body>
+
+</html>
